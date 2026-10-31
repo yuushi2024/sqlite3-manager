@@ -42,6 +42,11 @@ class TableIntrospectionTests(unittest.TestCase):
     def test_list_tables_excludes_internal(self):
         self.assertEqual(db_utils.list_tables(self.conn), ["notes", "people", "seq"])
 
+    def test_list_tables_keeps_names_resembling_internal_prefix(self):
+        self.conn.execute('CREATE TABLE sqlite1_data (id INTEGER)')
+        self.assertIn("sqlite1_data", db_utils.list_tables(self.conn))
+        self.assertNotIn("sqlite_sequence", db_utils.list_tables(self.conn))
+
     def test_primary_key_detection(self):
         cols = db_utils.table_columns(self.conn, "people")
         self.assertEqual(db_utils.primary_key_column(cols), "id")
@@ -49,6 +54,15 @@ class TableIntrospectionTests(unittest.TestCase):
     def test_primary_key_absent(self):
         cols = db_utils.table_columns(self.conn, "notes")
         self.assertIsNone(db_utils.primary_key_column(cols))
+
+    def test_composite_primary_key_uses_rowid(self):
+        self.conn.execute("CREATE TABLE composite (a, b, PRIMARY KEY (a, b))")
+        self.conn.executemany("INSERT INTO composite VALUES (?, ?)", [(1, 1), (1, 2)])
+        cols = db_utils.table_columns(self.conn, "composite")
+        self.assertIsNone(db_utils.primary_key_column(cols))
+        rows, ids, _, _ = db_utils.fetch_table_page(self.conn, "composite", cols)
+        self.assertEqual(rows, [(1, 1), (1, 2)])
+        self.assertEqual(ids, ["1", "2"])
 
     def test_quoted_table_with_special_name(self):
         self.conn.execute('CREATE TABLE "odd name" ("a b" INTEGER)')
@@ -164,6 +178,21 @@ class SplitStatementsTests(unittest.TestCase):
 
     def test_trailing_statement_without_semicolon(self):
         self.assertEqual(db_utils.split_statements("SELECT 1"), ["SELECT 1"])
+
+    def test_multiple_statements_on_one_line(self):
+        self.assertEqual(
+            db_utils.split_statements("SELECT 'a;b'; SELECT 2;"),
+            ["SELECT 'a;b';", "SELECT 2;"],
+        )
+
+    def test_trailing_comments_are_ignored(self):
+        for tail in ("-- trailing comment", "/* trailing; comment */", "-- a;\n/* b */"):
+            with self.subTest(tail=tail):
+                self.assertEqual(db_utils.split_statements("SELECT 1; " + tail), ["SELECT 1;"])
+
+    def test_trigger_body_is_one_statement(self):
+        trigger = "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET a=1; UPDATE t SET a=2; END;"
+        self.assertEqual(db_utils.split_statements(trigger + " SELECT 1;"), [trigger, "SELECT 1;"])
 
 
 class ExportCsvTests(unittest.TestCase):

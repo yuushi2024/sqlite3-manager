@@ -8,6 +8,7 @@ database work to the functions below.
 from __future__ import annotations
 
 import csv
+import re
 import sqlite3
 import sys
 from typing import Any, Iterable, Sequence
@@ -34,7 +35,7 @@ def list_tables(conn: sqlite3.Connection) -> list[str]:
     """Return user table names, excluding SQLite's internal ``sqlite_*`` tables."""
     cur = conn.execute(
         "SELECT name FROM sqlite_master "
-        "WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+        "WHERE type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
         "ORDER BY name"
     )
     return [row[0] for row in cur.fetchall()]
@@ -52,10 +53,8 @@ def table_columns(conn: sqlite3.Connection, table: str) -> list[tuple]:
 
 def primary_key_column(columns: Sequence[tuple]) -> str | None:
     """Return the name of the single primary-key column, or ``None``."""
-    for col in columns:
-        if len(col) > 5 and col[5]:
-            return col[1]
-    return None
+    keys = [col[1] for col in columns if len(col) > 5 and col[5]]
+    return keys[0] if len(keys) == 1 else None
 
 
 def _escape_like(value: str) -> str:
@@ -110,8 +109,8 @@ def fetch_table_page(
     """Fetch one page of a table for display.
 
     Returns ``(rows, row_ids, total, page)`` where *row_ids* are stable strings
-    identifying each row (the primary-key value, or SQLite's ``rowid`` for
-    tables without a primary key) so edits and deletes can target them.
+    identifying each row (the primary-key value, or SQLite's ``rowid`` when
+    there is no single-column primary key) so edits and deletes can target them.
     """
     table_q = quote_identifier(table)
     where, params = build_search_clause(columns, search_text)
@@ -124,8 +123,7 @@ def fetch_table_page(
     offset, page = page_offset(page, page_size, total)
 
     pk = primary_key_column(columns)
-    # Tables without a primary key still expose the implicit rowid, which we use
-    # to address individual rows.
+    # Use the implicit rowid when no single column identifies the row.
     prefix = "rowid AS __rowid__, " if pk is None else ""
     data_sql = f"SELECT {prefix}* FROM {table_q}"
     if where:
@@ -155,14 +153,17 @@ def split_statements(sql: str) -> list[str]:
     """
     statements: list[str] = []
     buffer = ""
-    for line in sql.splitlines(keepends=True):
-        buffer += line
-        if sqlite3.complete_statement(buffer):
+    def has_sql(fragment: str) -> bool:
+        return not re.fullmatch(r"(?:\s|--[^\n]*(?:\n|$)|/\*.*?(?:\*/|$)|;)*", fragment, re.DOTALL)
+
+    for char in sql:
+        buffer += char
+        if char == ";" and sqlite3.complete_statement(buffer):
             stripped = buffer.strip()
-            if stripped:
+            if has_sql(stripped):
                 statements.append(stripped)
             buffer = ""
-    if buffer.strip():
+    if has_sql(buffer):
         statements.append(buffer.strip())
     return statements
 

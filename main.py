@@ -345,16 +345,16 @@ class ModernSQLiteStudio:
         root_id = self.sidebar_tree.insert("", "end", text=" テーブル一覧", open=True)
 
         for name in db_utils.list_tables(self.conn):
-            self.sidebar_tree.insert(root_id, "end", text=f" 📄 {name}", values=(name,))
+            self.sidebar_tree.insert(root_id, "end", iid="table:" + name, text=f" 📄 {name}")
 
     def on_table_select(self, event):
         sel = self.sidebar_tree.selection()
         if not sel: return
 
-        item = self.sidebar_tree.item(sel[0])
-        if not item['values']: return
+        item_id = sel[0]
+        if not item_id.startswith("table:"): return
 
-        self.current_table = item['values'][0]
+        self.current_table = item_id[len("table:"):]
         self.current_page = 0
         self.search_var.set("")
 
@@ -480,25 +480,27 @@ class ModernSQLiteStudio:
         try:
             for stmt in statements:
                 last_cur = self.conn.execute(stmt)
+            rows = last_cur.fetchall() if last_cur is not None and last_cur.description else None
+            self.conn.commit()
         except sqlite3.Error as e:
+            self.conn.rollback()
             messagebox.showerror("SQLエラー", str(e))
             return
 
         # 表示用の結果は最後に実行した SELECT のもの
         cur = last_cur
-        if cur is not None and cur.description:
+        if rows is not None:
             cols = [d[0] for d in cur.description]
             self.tree_sql["columns"] = cols
             self.tree_sql["show"] = "headings"
             for c in cols:
                 self.tree_sql.heading(c, text=c)
                 self.tree_sql.column(c, width=100)
-            for row in cur.fetchall():
+            for row in rows:
                 self.tree_sql.insert("", "end", values=row)
         else:
-            self.conn.commit()
             messagebox.showinfo("完了", f"実行完了しました。\n影響行数: {cur.rowcount if cur else 0}")
-            if self.current_table: self.load_data()
+        if self.current_table: self.load_data()
 
     def next_page(self):
         self.current_page += 1
